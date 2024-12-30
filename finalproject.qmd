@@ -1,0 +1,393 @@
+---
+title: "**Peru Cancer Mortality Observatory**"
+author: "by *Daniel Enriquez-Vera*"
+format: dashboard
+execute:
+    echo: false
+theme: yeti
+---
+
+```{python}
+# Modules to import
+import pandas as pd
+import requests
+import tempfile
+import os
+import numpy as np
+import re
+import plotly.express as px
+import matplotlib.pyplot as plt
+import seaborn as sns
+import geopandas as gpd
+import warnings
+warnings.filterwarnings("ignore")
+```
+
+```{python}
+#| eval: False
+
+#######################
+# All preliminary data curation and wrangling
+
+# Step 1: retrieving mortality raw data
+url = "https://files.minsa.gob.pe/s/Ae52gBAMf9aKEzK/download/SINADEF_DATOS_ABIERTOS.csv"
+mort_path = "/Users/denriquez/Documents/sinadef.csv" #"D:/python_temp/sinadef.csv"
+headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+}
+# Step 2: Request to download the file
+mortalitydata = requests.get(url, headers=headers)
+
+# Step 3: Sanity check and save it
+if mortalitydata.status_code == 200:
+    with open(mort_path, "wb") as file:
+        file.write(mortalitydata.content)
+    print("File downloaded successfully as 'sinadef.csv'")
+else:
+    print(f"Failed to download file. Status code: {mortalitydata.status_code}")
+
+# Step 4: Define regex patterns to retrieve only cancer death cases
+strings_cancer = r"malign*|tumor*|cance*|linfoma|leu.emia|metastasis|mieloma|neoplasia"
+regex_cancer = r"^C.*|^D(3[7-9]|4[0-9]).*"
+
+# Step 5: Data wrangling
+
+### List to store filtered rows
+df_rows = []
+
+# Read and process the file
+with open(mort_path, "r", encoding="utf-8") as file_mort:
+    for i, line in enumerate(file_mort):
+        line_xd = line.strip().split(",")  # The separator is a comma
+        if i == 0:
+            # First row is the header
+            headers = line_xd
+        elif any(
+            re.search(strings_cancer, value, re.IGNORECASE)
+            for value in line_xd[20:32:2]
+        ):
+            # Check for matches in columns 20, 22, 24, ... 30
+            df_rows.append(line_xd)
+        elif any(
+            re.search(regex_cancer, value, re.IGNORECASE) for value in line_xd[21:32:2]
+        ):
+            # Check for matches in columns 21, 23, 25, ... 31
+            df_rows.append(line_xd)
+
+# Create a DataFrame from the filtered rows
+df_mortality = pd.DataFrame(df_rows, columns=headers)
+
+# To remove all "SIN REGISTRO"
+df_mortality.replace("SIN REGISTRO", np.nan, inplace=True)
+
+# Step 6: all cancer matches in a new column as a list
+total_cancer = (
+    r"malign*|tumor|cance*|linfoma|leu.emia|metastasis|mieloma|neoplasia|^C.*|^D(3[7-9]|4[0-9]).*"
+)
+df_mortality["matches"] = df_mortality.iloc[:, 20:32].apply(
+    lambda row: [
+        value for value in row.astype(str)  # Ensure values are strings
+        if pd.notna(value) and re.search(total_cancer, value, flags=re.IGNORECASE)
+    ],
+    axis=1,
+)
+
+# Step 7: Subselect columns of interest
+df_subset = df_mortality.iloc[:, np.r_[0:19, 32]]
+
+
+# Step 8:Pre-compiled regex patterns
+hem_onc_patterns = [
+    re.compile(r"D4[6-7].*", re.IGNORECASE), 
+    re.compile(r"C(8[1-9]|9[0-6]).*", re.IGNORECASE),
+    re.compile(r"linfom*|leu.emia|mieloma", re.IGNORECASE)]
+
+# Step 9: My function to categoriza by regex patterns
+def categorize_by_regex(tags):
+    # Apply regex patterns
+    if not isinstance(tags, (list, tuple, set)):
+        # Convert single string to list or handle None as an empty list
+        if isinstance(tags, str):
+            tags = [tags]
+        else:
+            tags = []
+    if any(
+        any(pattern.search(tag) for pattern in hem_onc_patterns) for tag in tags
+    ):
+        return "hem_tumor"
+    return "solid_tumor"
+
+# Step 10: apply the function to all columns
+
+df_subset["category"] = df_subset["matches"].apply(categorize_by_regex)
+
+# Step 11: To know how many hematological malignancies vs solid tumors
+df_subset["category"].value_counts()
+
+# Step 12: Exploring the dataset
+df_subset.describe()
+
+# length
+print(f"there are {len(df_subset)} total deads from cancer between 2017-2024")
+
+for columns in df_subset.columns:
+    print(columns)
+
+# Data exploration, tail, info, dtypes, ndim, nunique, isnull, describe, columns
+df_subset.head()
+df_subset.nunique()
+df_subset.isnull().sum()
+
+# Step 13: Saving the final dataset
+df_subset.to_csv("./final_output.txt", sep=",", index=False)
+```
+
+
+```{python}
+# Reading the final curated dataset
+df_subset = pd.read_csv("final_output.txt",  sep=",")
+
+# The number of deaths
+num_deaths = f"{len(df_subset):,}"
+
+# Range of years
+years_dataset = f"cancer deaths between {df_subset["ANIO"].min()} and {df_subset["ANIO"].max()}."
+
+# percentages by category
+percentages_death = df_subset["category"].value_counts(normalize= True)*100
+percentages_death = percentages_death.apply(lambda x: f"{x:,.1f}%").to_dict()
+
+hem_death = percentages_death.get("hem_tumor", 0)
+
+# Categorical and numerical variables
+categorical = df_subset.select_dtypes(include = "object").columns
+numerical = df_subset.select_dtypes(exclude = "object").columns
+```
+
+# The project
+
+## Row 1 {height=30%}
+
+::: {.valuebox icon="hospital" color="#edf8b1" title=""}
+
+`{python} str(num_deaths)`
+
+`{python} str(years_dataset)`
+
+
+:::
+
+::: {.valuebox icon="droplet-fill" color="#c7e9b4" title=""}
+
+`{python} str(hem_death)`
+
+were hematological malignancies.
+
+:::
+
+::: {.valuebox icon="database-down" color="#ffffd9" title=""}
+
+SINADEF
+
+based on the national registry of deaths.
+
+:::
+
+## Row 2 {height=70%}
+
+### Time Trend
+
+```{python}
+## Final dataset and exploration
+# number of deaths by year
+countbyyear = df_subset.groupby(['ANIO', 'category']).size().reset_index(name='count')
+
+
+category_rename_map = {
+    "hem_tumor": "Hematological cancer",
+    "solid_tumor": "Solid cancer"
+}
+
+# Rename categories using map()
+countbyyear['category'] = countbyyear['category'].map(category_rename_map)
+
+# Define a custom color map
+custom_color_map = {
+    "Hematological cancer": "red",
+    "Solid cancer": "blue"
+}
+
+fig1 = px.line(countbyyear, x="ANIO", y="count", color="category", title="Death frequency by year", color_discrete_map=custom_color_map)
+
+# Update the layout: title, axis labels, and colors
+fig1 = fig1.update_layout(
+    title="Death Frequency by Year",  # Custom title
+    title_x=0.5,  # Center the title
+    xaxis_title="Year",  # Customize x-axis title
+    yaxis_title="Death Count",  # Customize y-axis title
+    template="plotly_white",
+    legend_title="Cancer Type",
+    legend=dict(
+        x=0.8,  
+        y=0.8,  
+        xanchor='left',  
+        yanchor='top',  
+        traceorder='normal',  
+        bgcolor='rgba(255, 255, 255, 0.5)',  
+        bordercolor='Black', 
+        borderwidth=2  
+    )
+)
+
+# Update the color
+fig1 = fig1.update_traces(marker=dict(size=10, line=dict(width=2, color='DarkSlateGrey')))
+
+# Show the plot
+fig1.show()
+```
+
+### Map
+
+::: {.panel-tabset} 
+
+### SMR
+
+
+```{python}
+# Grouping by regions, excluding foreign cases
+df_dept = df_subset.query(" PAIS_DOMICILIO =='PERU'").groupby(["DEPARTAMENTO_DOMICILIO", "category"]).agg(count=("category", "size")).reset_index()
+
+# Histogram per region
+region_hist = px.histogram(df_dept, y="count", x="DEPARTAMENTO_DOMICILIO", color="category", barmode="group")
+
+# Calculating the ratio between hem_tumor and solid_tumor mortality
+### A. First, Pivot the table
+pivot_def = df_dept.pivot_table(index="DEPARTAMENTO_DOMICILIO", columns = "category", values="count", aggfunc="sum")
+
+pivot_def = pivot_def.reset_index()
+
+### B. Calculating the ratio
+pivot_def["ratio_hem_to_solid"] = pivot_def["hem_tumor"] / pivot_def["solid_tumor"]
+
+### C. Exploring the ratio
+#pivot_def
+
+# Calculating the rate of hem mortality by department population
+
+### A. Importing Peruvian population data 
+perudata = pd.read_csv("peru_dpt_data.csv", encoding='latin1')
+
+### B. Selecting only population
+pop_peru = perudata[["nom_dpto", "pob_total"]]
+
+### C. Merging with the database summary
+all_mortality = pd.merge(pivot_def, pop_peru, how="left", left_on="DEPARTAMENTO_DOMICILIO", right_on="nom_dpto")
+
+### D. Drop the 'nom_dpto'
+all_mortality = all_mortality.drop(columns=['nom_dpto'])
+
+### E. Calculating the mortality rate per 100,000
+all_mortality["hem_mortality"] = all_mortality["hem_tumor"] / all_mortality["pob_total"] * 100000
+#all_mortality
+
+### F. Subsetting only study variables: DEPARTAMENTO_DOMICILIO, ratio_hem_to_solid, hem_mortality
+hem_df = all_mortality[["DEPARTAMENTO_DOMICILIO", "ratio_hem_to_solid", "hem_mortality"]] 
+#hem_df
+
+# Geojson file
+### A. Reading the Geojson file from Peru
+peru = gpd.read_file("peru_departamental_simple(1).geojson")
+
+### B. Merging the Geojson file with data
+gdf = peru.set_index('NOMBDEP').join(hem_df.set_index('DEPARTAMENTO_DOMICILIO'))
+
+### C Plot the choropleth map using matplot
+fig, ax = plt.subplots(1, 1, figsize=(10, 10))
+
+#### Plot the map with values
+gdf.plot(
+    column='hem_mortality', 
+    ax=ax, 
+    legend=True,
+    legend_kwds={'label': "Mortality rate per 100,000 persons",'orientation': "vertical"},
+    cmap='YlGnBu')
+
+ax.set_title('Hematological Mortality Rates by Region', fontsize=16, fontweight='bold')
+
+ax.set_axis_off()  
+#### Show the plot
+plt.show();
+```
+
+
+### Ratio Hem:Solid tumors
+
+```{python}
+### C Plot the choropleth map using matplot
+fig, ax = plt.subplots(1, 1, figsize=(10, 10))
+
+#### Plot the map with values
+gdf.plot(
+    column='ratio_hem_to_solid', 
+    ax=ax, 
+    legend=True,
+    legend_kwds={'label': "Ratio Hematological:Solid malignancies mortality",'orientation': "vertical"},
+    cmap='YlGnBu')
+
+#### Customize the plot
+ 
+
+ax.set_title('Ratio of Hematological to Solid Tumor Deaths by Region', fontsize=16, fontweight='bold')
+ax.set_axis_off() 
+#### Show the plot
+plt.show();
+
+```
+
+:::
+
+# Analyses
+
+## Row 1
+
+### Sex distribution
+
+```{python}
+# Exploration by sex
+df_subset["SEXO"].value_counts()
+
+sexplot = sns.countplot(x="SEXO", data=df_subset)
+plt.title("Sex distribution of cancer related mortality")
+
+sexplot;
+```
+
+### Age distribution
+
+```{python}
+# Age exploration
+plt.figure(figsize=(8,4))
+sns.histplot(df_subset["EDAD"],kde = True)
+plt.title('Age distribution of cancer related mortality',fontsize = 14)
+plt.xlabel('Age in years',fontsize = 12)
+plt.ylabel('Frq',fontsize = 12)
+
+plt.show();
+```
+
+
+
+
+
+
+# Methods
+
+In this mini-project, mortality raw data was retrieved from the Peruvian national registry of deaths (SINADEF), accessed on December 20th, 2024.
+Causes of death were parsed using REGEX patterns for ICD10 codes and truncated words such as `Leukemia`, `Lymphoma`,  `Cancer`, `Tumor`, `Malignancy`, `Myeloma`.
+Cases were grouped into Hematological or Solid tumors.
+Mortality rate was calculated after grouping total death cases per region and dividing by regional population (2017).
+
+The last dataset can be downloaded in the following link:
+
+# About
+
